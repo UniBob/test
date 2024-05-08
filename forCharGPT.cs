@@ -1,914 +1,499 @@
+using Microsoft.Win32;
 using System;
-using System.Collections.Generic;
+using System.Collections;
 using System.ComponentModel;
-using System.Data;
-using System.Diagnostics;
-using System.Drawing;
-using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
-using System.Text;
+using System.Management;
 using System.Net;
 using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using PcapDotNet.Base;
-using PcapDotNet.Core;
-using PcapDotNet.Packets;
-using PcapDotNet.Packets.Ethernet;
-using PcapDotNet.Packets.Icmp;
-using PcapDotNet.Packets.IpV4;
-using PcapDotNet.Packets.Transport;
-using System.Management;
-using Microsoft.Win32;
+using static P215Test.NetworkAdapter;
+using static P215Test.Program;
 
-
-namespace P215test
+namespace P215Test
 {
-
-    public partial class P215Test : Form
+    internal class NetworkAdapters
     {
-        [DllImport("Kernel32.dll")] private static extern Boolean AllocConsole();
+        internal static uint Count => 17;
+        internal static IPAddress DestAddr => IPAddress.Parse("192.168.100.100");
+        internal static IPAddress VideoIP => IPAddress.Parse("192.168.100.44");
 
+        internal static CancellationTokenSource CTS_SetSpeed { get; private set; } = new CancellationTokenSource();
+        internal CancellationToken Token_SetSpeed => CTS_SetSpeed.Token;
 
-        private static Mutex _pool = new Mutex();
+        // Проверка, активен ли порт
+        private bool IsConfigPort17 => Dns.GetHostEntry(Dns.GetHostName()).AddressList.Contains(DestAddr);
 
-        readonly public static int _pingsent = 420;
-        int _timeLeft = 10;
-        int _counter;
-        int _secondCounter;
-        bool _flagFor;
-        private static bool _killThread = false;
-
-        List<CheckBox> myCheckBoxs = new List<CheckBox>();     // = new List<CheckBox>;
-        List<Label> myLabel = new List<Label>();
-        static List<int> myState = new List<int>();
-        public P215Test()
+        internal NetworkAdapter[] Interface { get; set; } = new NetworkAdapter[Count];
+        internal NetworkAdapter this[uint i] { get => Interface[i]; set => Interface[i] = value; }
+        internal NetworkAdapters()
         {
-
-            for (int i = 0; i < 16; i++)
-            {
-                myState.Add(0);
-
-            }
-
-            InitializeComponent();
-
-            #region initForms
-
-            myCheckBoxs.Add(checkBox1);
-            myCheckBoxs.Add(checkBox2);
-            myCheckBoxs.Add(checkBox3);
-            myCheckBoxs.Add(checkBox4);
-            myCheckBoxs.Add(checkBox5);
-            myCheckBoxs.Add(checkBox6);
-            myCheckBoxs.Add(checkBox7);
-            myCheckBoxs.Add(checkBox8);
-            myCheckBoxs.Add(checkBox9);
-            myCheckBoxs.Add(checkBox10);
-            myCheckBoxs.Add(checkBox11);
-            myCheckBoxs.Add(checkBox12);
-            myCheckBoxs.Add(checkBox13);
-            myCheckBoxs.Add(checkBox14);
-            myCheckBoxs.Add(checkBox15);
-            myCheckBoxs.Add(checkBox16);
-
-            myLabel.Add(label2);
-            myLabel.Add(label3);
-            myLabel.Add(label4);
-            myLabel.Add(label5);
-            myLabel.Add(label6);
-            myLabel.Add(label7);
-            myLabel.Add(label8);
-            myLabel.Add(label9);
-            myLabel.Add(label10);
-            myLabel.Add(label11);
-            myLabel.Add(label12);
-            myLabel.Add(label13);
-            myLabel.Add(label14);
-            myLabel.Add(label15);
-            myLabel.Add(label16);
-            myLabel.Add(label17);
-
-            foreach (Label t in myLabel)
-            {
-                t.Visible = false;
-                t.Text = "";
-            }
-            #endregion
+            for (uint i = 0; i < Count; ++i)
+                Interface[i] = new NetworkAdapter();
         }
+        public IEnumerator Enumerator => Interface.GetEnumerator();
 
-        private static void GetNull()
+
+        internal void SearchNetworkAdapters()
         {
-            lock (Locker)
+            RegistryKey key = Registry.LocalMachine.OpenSubKey(NetworkRegisrty.Path);
+            string[] folders = key.GetSubKeyNames();  // названия подпапок в директории
+
+            foreach (string folder in folders)
             {
-
-
-                for (int i = 0; i < 16; i++)
+                NetworkRegisrty.GetTypeAndDriverId(folder, out key, out int type, out string driverId);
+                if (type == 14 && driverId.Substring(0, 3) == "PCI") // сеть стандарта 802.3 && адаптер, подкл. через PCI-шину
                 {
-                    myState[i] = 0;
-                }
-                Thread.Sleep(10);
-            }
-        }
-
-
-        static readonly object Locker = new object();
-
-        private void Button3Click(object sender, EventArgs e)
-        {
-            //------------------------------------------ начальная инициализация
-
-            //string macDest = GetMacFromIp("192.168.100.100");
-
-            //if (macDest == "fail")
-            //{
-            //    MessageBox.Show(@"Ноутбук не подкюлчен или неправильно заданы начальные конфигурации сети ноутбука");
-            //    return;
-            //}
-
-
-            //------------------------------------------)
-
-            for (int i = 0; i < myCheckBoxs.Count; i++)
-            {
-                if (myCheckBoxs[i].Checked)
-                {
-                    myLabel[i].Visible = true;
-                    myLabel[i].ForeColor = Color.Black;
-                }
-            }
-
-            if (button3.Text == @"ОПРОС")
-            {
-                GetNull();
-                button3.Enabled = false;            ///////////////////////////////////
-
-                timer1.Start();
-
-                _flagFor = false;
-
-                if (myCheckBoxs.Where(t => t.Checked).Any())
-                {
-                    _flagFor = true;
-                }
-
-                if (_flagFor)
-                {
-
-                    button3.Text = @"СТОП";
-
-                    for (var ii = 0; ii < myCheckBoxs.Count; ii++)
+                    NetworkRegisrty.GetIPAndMAC(key, out string folderIP, out string[] ips, out string[] macs);
+                    if (ips != null && macs != null)
                     {
-                        myCheckBoxs[ii].Enabled = false;
-                        radioButton1.Enabled = false;
-                        radioButton2.Enabled = false;
-                        myLabel[ii].Text = "";
-                    }
-                    _counter = 0;
-                    _secondCounter = 1;
-                    _timeLeft = 10;
-                    _killThread = false;
-                }
-
-
-
-                else
-                {
-                    MessageBox.Show(@"Порты не выбраны");
-                    return;
-                }
-
-                int devNum = 0;
-                /*
-                foreach (var myCheckBox in myCheckBoxs)
-                {
-                    if (myCheckBox.Checked)
-                    {
-                       MyPacketForm(devNum);
-                    }
-
-                    devNum++;
-                }
-                 */
-
-            }
-            else
-            {
-                button3.Text = @"ОПРОС";
-                timer1.Stop();
-                radioButton1.Enabled = true;
-                radioButton2.Enabled = true;
-                foreach (var t in myCheckBoxs)
-                    t.Enabled = true;
-                _counter = 0;
-                _secondCounter = 0;
-                GetNull();
-                _killThread = true;
-                //тормозить потоки
-            }
-
-        }
-
-        private void Timer1Tick(object sender, EventArgs e)
-        {
-            button3.Enabled = true;
-            if (_counter >= 16)
-            {
-                timer1.Stop();
-                return;
-
-            }
-
-            while (myCheckBoxs[_secondCounter].Checked != true && _secondCounter < 15)
-            {
-                _secondCounter++;
-            }
-
-            if (_secondCounter >= 16)
-            {
-                while (myCheckBoxs[_counter].Checked != true && _counter < 15)
-                {
-                    _counter++;
-                }
-                _secondCounter = _counter + 1;
-                while (myCheckBoxs[_secondCounter].Checked != true && _secondCounter < 15)
-                {
-                    _secondCounter++;
-                }
-
-            }
-            if (myCheckBoxs[_counter].Checked != true)
-            {
-                timer1.Stop();
-                return;
-            }
-            if (_timeLeft == 10)
-            {
-                _killThread = false;
-                MyPacketForm(_counter, _secondCounter);
-            }
-            if (_timeLeft == 1) _killThread = true;
-
-            if (_timeLeft > 0 && _counter < 16)
-            {
-                // Display the new time left
-                // by updating the Time Left label.
-                _timeLeft = _timeLeft - 1;
-                myLabel[_counter].Text = _timeLeft + @" сек";
-
-            }
-            else
-            {
-                _timeLeft = 10;
-                if (myState[_counter] > (int)(_pingsent * 80 / 100))
-                {
-                    myLabel[_counter].Text = @"Работает ";// +100 * myState[_counter] / _pingsent;
-                    myLabel[_counter].ForeColor = Color.Green;
-
-                }
-                else
-                {
-                    myLabel[_counter].Text = @"Не работает ";//+ 100 * myState[_counter] / _pingsent;
-                    myLabel[_counter].ForeColor = Color.Red;
-                }
-
-                _counter++;
-
-            }
-        }
-
-        private void Button1Click(object sender, EventArgs e)
-        {
-            foreach (CheckBox var in myCheckBoxs)
-            {
-                var.Checked = true;
-            }
-        }   //Выбрать все
-
-        private void Button2Click(object sender, EventArgs e)
-        {
-            foreach (CheckBox var in myCheckBoxs)
-            {
-                var.Checked = false;
-            }
-        }   //Убрать все
-
-        private void Button4Click(object sender, EventArgs e)
-        {
-
-
-
-            // webBrowser1.Navigate("192.168.0.44");
-            string macDest = GetMacFromIp("192.168.100.44");
-
-            if (macDest == "fail")
-            {
-                MessageBox.Show(@"Камера не найдена");
-                return;
-            }
-
-            const string filename = @"iexplore";
-            Process.Start(filename);
-
-        }
-
-
-        [DllImport("iphlpapi.dll", ExactSpelling = true)]
-        static extern int SendARP(int destIP, int srcIP, byte[] pMacAddr, ref uint phyAddrLen);
-
-        private static string GetMacFromIp(string addr)
-        {
-            var dst = IPAddress.Parse(addr);
-            var macAddr = new byte[6];
-            var macAddrLen = (uint)macAddr.Length;
-            if (dst != null)
-                if (SendARP(BitConverter.ToInt32(dst.GetAddressBytes(), 0), 0, macAddr, ref macAddrLen) != 0)
-                {
-                    return "fail";
-                }
-
-
-            var str = new string[(int)macAddrLen];
-            for (var i = 0; i < macAddrLen; i++)
-                str[i] = macAddr[i].ToString("x2");
-
-            return str.Aggregate("", (current, t) => current + t);
-        }
-
-        private static PacketDevice FindDevice(int num)
-        {
-            IList<LivePacketDevice> allDevices = LivePacketDevice.AllLocalMachine;
-
-            if (allDevices.Count == 0)
-            {
-                return null;
-            }
-
-            PacketDevice selectedDevice = null;
-            // Print the list
-            for (int i = 0; i != allDevices.Count; ++i)
-            {
-                var device = allDevices[i];
-                string desc = device.Description;
-                string numbTemp;
-                if (num < 9)
-                    numbTemp = "#0" + (num + 1);
-                else
-                {
-                    numbTemp = "#" + (num + 1);
-                }
-
-                if (desc.Contains(numbTemp))
-                {
-                    selectedDevice = allDevices[i];
-                    break;
-                }
-            }
-            return selectedDevice;
-        }
-
-        private static void MyPacketForm(int num, int numD)
-        {
-            PacketDevice selectedDevice = FindDevice(num);
-            PacketDevice destinationDevice = FindDevice(numD);
-            //PacketDevice[] devices = new PacketDevice[2];
-            //devices[0] = FindDevice(num);
-            //devices[1] = FindDevice(numD);
-            DestinationAndSourceAddress o = new DestinationAndSourceAddress(selectedDevice, destinationDevice);
-
-            var thread2 = new Thread(Writer);
-            thread2.Start(o);
-            var thread = new Thread(Reader);
-            thread.Start(selectedDevice);
-        }
-        class DestinationAndSourceAddress
-        {
-            private PacketDevice source;
-            private PacketDevice destination;
-            public DestinationAndSourceAddress(PacketDevice o, PacketDevice d)
-            {
-                source = o;
-                destination = d;
-            }
-
-            public PacketDevice GetSoure()
-            {
-                return source;
-            }
-
-            public PacketDevice GetDestination()
-            {
-                return destination;
-            }
-
-        }
-        class GetMacAddressFromIPAddress
-        {
-            private const int PingTimeout = 1000;
-
-            private static bool IsHostAccessible(string hostNameOrAddress)
-            {
-                var ping = new Ping();
-                var buf = System.Text.Encoding.ASCII.GetBytes("ollllllllllllllllllloooooooolllllllllllllllloooooooooo222");
-                PingReply reply = null;
-                try
-                {
-                    reply = ping.Send(hostNameOrAddress, PingTimeout, buf);
-                }
-                catch (Exception)
-                {
-                    reply = null;
-                }
-                if (reply != null) return reply.Status == IPStatus.Success;
-                return false;
-            }
-
-            #region Getting MAC from ARP
-            [DllImport("iphlpapi.dll", ExactSpelling = true)]
-            // ReSharper disable MemberHidesStaticFromOuterClass
-            static extern int SendARP(int destIP, int srcIP, byte[] pMacAddr, ref uint phyAddrLen);
-            // ReSharper restore MemberHidesStaticFromOuterClass
-
-            public static string GetMacAddressFromArp(string hostNameOrAddress)
-            {
-                if (!IsHostAccessible(hostNameOrAddress)) return null;
-                IPHostEntry hostEntry = Dns.GetHostEntry(hostNameOrAddress);
-                if (hostEntry.AddressList.Length == 0)
-                    return null;
-                var macAddr = new byte[6];
-                var macAddrLen = (uint)macAddr.Length;
-
-#pragma warning disable 612, 618
-                if (SendARP((int)hostEntry.AddressList[0].Address, 0, macAddr, ref macAddrLen) != 0)
-#pragma warning restore 612,618
-                    return null;
-                var macAddressString = new StringBuilder();
-                foreach (byte t in macAddr)
-                {
-                    if (macAddressString.Length > 0)
-                        macAddressString.Append(":");
-                    macAddressString.AppendFormat("{0:x2}", t);
-                }
-                return macAddressString.ToString();
-            } // end GetMACAddressFromARP
-            #endregion Getting MAC from ARP
-        }
-
-
-
-        private static void Writer(object o)
-        {
-            var temp = (DestinationAndSourceAddress)o;
-            var selectedDevice = temp.GetSoure();
-            if (selectedDevice == null)
-                return;
-            string addr = selectedDevice.Addresses.Count == 2 ? selectedDevice.Addresses[1].Address.ToString() : selectedDevice.Addresses[0].Address.ToString();
-
-            addr = addr.Remove(0, 9);
-
-            var selectedDevice2 = temp.GetDestination();
-            if (selectedDevice2 == null)
-                return;
-            string addr2 = selectedDevice2.Addresses.Count == 2 ? selectedDevice2.Addresses[1].Address.ToString() : selectedDevice2.Addresses[0].Address.ToString();
-
-            addr2 = addr2.Remove(0, 9);
-
-
-            using (PacketCommunicator communicator = selectedDevice.Open(100, // name of the device
-                                                                         PacketDeviceOpenAttributes.Promiscuous, // promiscuous mode
-                                                                         1000)) // read timeout
-            {
-
-                var mac = GetMacFromIp(addr);
-                if (mac == "fail")
-                {
-                    return;
-                }
-                mac = mac.ToUpper();
-                mac = mac.Insert(2, ":");
-                mac = mac.Insert(5, ":");
-                mac = mac.Insert(8, ":");
-                mac = mac.Insert(11, ":");
-                mac = mac.Insert(14, ":");
-
-                var source = new MacAddress(mac);
-
-                var macD = GetMacFromIp(addr2);
-                if (macD == "fail")
-                {
-                    return;
-                }
-                macD = macD.ToUpper();
-                macD = macD.Insert(2, ":");
-                macD = macD.Insert(5, ":");
-                macD = macD.Insert(8, ":");
-                macD = macD.Insert(11, ":");
-                macD = macD.Insert(14, ":");
-
-                var destination = new MacAddress(macD);
-
-                //try
-                //{
-                //    destination = new MacAddress(GetMacAddressFromIPAddress.GetMacAddressFromArp("192.168.100.100"));
-                //}
-                //catch (Exception)
-                //{
-                //   return;
-                //    throw;
-                //}
-
-                // Ethernet Layer
-                var ethernetLayer = new EthernetLayer
-                {
-                    Source = source,
-                    Destination = destination
-                };
-
-                // IPv4 Layer
-                var ipV4Layer = new IpV4Layer
-                {
-                    //Source = new IpV4Address("1.2.3.4"),
-                    Source = new IpV4Address(addr),
-                    Ttl = 8,
-                    // The rest of the important parameters will be set for each packet
-                };
-
-                // ICMP Layer
-                var icmpLayer = new IcmpEchoLayer();
-
-                // Create the builder that will build our packets
-                var builder = new PacketBuilder(ethernetLayer, ipV4Layer, icmpLayer);
-
-                // Send 100 Pings to different destination with different parameters
-                for (int i = 0; i != _pingsent; ++i)
-                {
-                    // Set IPv4 parameters
-                    //ipV4Layer.CurrentDestination = new IpV4Address("2.3.4." + i);
-
-                    ipV4Layer.Destination = new IpV4Address(addr2);
-                    ipV4Layer.Identification = (ushort)i;
-
-                    // Set ICMP parameters
-                    icmpLayer.SequenceNumber = (ushort)i;
-                    icmpLayer.Identifier = (ushort)i;
-
-                    // Build the packet
-                    Packet packet = builder.Build(DateTime.Now);
-
-                    // Send down the packet
-                    lock (Locker)
-                    {
-                        communicator.SendPacket(packet);
-                        Thread.Sleep(10);
+                        ValidatedConfigPort(folder, folderIP, ips[0], macs[0]);
                     }
                 }
-
             }
-
-
-
         }
-
-
-        private static void Reader(object o)
+        private void ValidatedConfigPort(string folder, string folderIP, string ip, string mac)
         {
+            if (ip == null || mac == null)
+            { return; }
 
-            int counter = 1;
-
-            var selectedDevice = (PacketDevice)o;
-            if (selectedDevice == null)
-                return;
-            var addr = selectedDevice.Addresses.Count == 2 ? selectedDevice.Addresses[1].Address.ToString() : selectedDevice.Addresses[0].Address.ToString();
-
-            addr = addr.Remove(0, 9);
-
-            string strAddr = addr.Remove(0, 12);
-            int numAddr = Convert.ToInt32(strAddr);
-
-            using (PacketCommunicator communicator =
-                selectedDevice.Open(65536,                                  // portion of the packet to capture
-                                                                            // 65536 guarantees that the whole packet will be captured on all the link layers
-                                    PacketDeviceOpenAttributes.Promiscuous, // promiscuous mode
-                                    1000))                                  // read timeout
+            try
             {
-                //AllocConsole();
-                Console.WriteLine(@"Listening on " + selectedDevice.Description + @"...");
-
-                communicator.SetFilter("icmp and dst host " + addr);     // and dst host "+addr);
-                // Retrieve the packets
-                Packet packet;
-                do
+                if (ip.Substring(0, 12) == "192.168.100." && mac == "255.255.255.0")
                 {
-                    if (_killThread)
+                    uint num = Convert.ToUInt32(ip.Substring(12));
+
+                    if (1 <= num && num <= 16)
                     {
-                        Thread.CurrentThread.Abort();
-                        return;
+                        Interface[num] = new NetworkAdapter(true, folder, folderIP, ip);
                     }
-                    PacketCommunicatorReceiveResult result = communicator.ReceivePacket(out packet);
-                    switch (result)
+                    else if (num == 100 && IsConfigPort17)
                     {
-                        case PacketCommunicatorReceiveResult.Timeout:
-                            // Timeout elapsed
-                            continue;
-                        case PacketCommunicatorReceiveResult.Ok:
-
-                            if (packet.Length == 60)
-                            {
-                                var datt = packet.Ethernet.IpV4.Icmp;
-                                uint tt = datt.Variable;
-                                tt = tt >> 16;
-
-                                Console.WriteLine(addr + @" = " + counter + @") Var - " + tt);
-                                counter++;
-                                myState[numAddr - 1] += 1;
-                                Thread.Sleep(10);
-                                break;
-                            }
-                            continue;
-                        default:
-                            throw new InvalidOperationException("The result " + result +
-                                                                " shoudl never be reached here");
-
+                        Interface[0] = new NetworkAdapter(true, folder, folderIP, ip);
                     }
-
-                } while (true);
-
-            }
-
-        }
-
-        private void RadioButton1CheckedChanged(object sender, EventArgs e)
-        {
-
-            if (radioButton2.Checked) return;
-            button3.Enabled = false;
-
-            var query = new SelectQuery("Win32_NetworkAdapter", "NetConnectionStatus=2");
-            var search = new ManagementObjectSearcher(query);
-
-
-            RegistryKey regKey;
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0012", true); //#04
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0014", true); //#08
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0016", true); //#03
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0018", true); //#07
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0020", true); //#02
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0022", true); //#06
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0024", true); //#01
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0026", true); //#05
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0027", true); //#16
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0030", true); //#12
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0032", true); //#15
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0033", true); //#11
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0036", true); //#14
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0038", true); //#10
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0039", true); //#13
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0042", true); //#09
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "4");
-            Registry.LocalMachine.Flush();
-
-            label18.Visible = true;
-
-            for (var ii = 0; ii < myCheckBoxs.Count; ii++)
-            {
-                myCheckBoxs[ii].Enabled = false;
-                radioButton1.Enabled = false;
-                radioButton2.Enabled = false;
-                myLabel[ii].Text = "";
-            }
-
-            foreach (ManagementObject result in search.Get())
-            {
-                NetworkAdapter adapter = new NetworkAdapter(result);
-                if (adapter.AdapterType.Equals("Ethernet 802.3"))
-                {
-                    adapter.Disable();
-                    adapter.Enable();
                 }
             }
-
-            for (var ii = 0; ii < myCheckBoxs.Count; ii++)
-            {
-                myCheckBoxs[ii].Enabled = true;
-                radioButton1.Enabled = true;
-                radioButton2.Enabled = true;
-                myLabel[ii].Text = "";
-            }
-            label18.Visible = false;
-            button3.Enabled = true;
+            catch { }   // Substring(), Interface[portNum].GetSpeed()
         }
 
-
-        private void RadioButton2CheckedChanged(object sender, EventArgs e)
+        internal async Task<bool> SetSpeedAllAsync(NetworkSpeed speed)
         {
-            if (radioButton1.Checked) return;
-            button3.Enabled = false;
-            var query = new SelectQuery("Win32_NetworkAdapter", "NetConnectionStatus=2");
-            var search = new ManagementObjectSearcher(query);
-
-            RegistryKey regKey;
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0012", true); //#04
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0014", true); //#08
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0016", true); //#03
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0018", true); //#07
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0020", true); //#02
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0022", true); //#06
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0024", true); //#01
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0026", true); //#05
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0027", true); //#16
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0030", true); //#12
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0032", true); //#15
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0033", true); //#11
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0036", true); //#14
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0038", true); //#10
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0039", true); //#13
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            regKey = Registry.LocalMachine.OpenSubKey(
-                @"SYSTEM\CurrentControlSet\Control\Class\{4D36E972-E325-11CE-BFC1-08002BE10318}\0042", true); //#09
-            if (regKey != null) regKey.SetValue("*SpeedDuplex", "2");
-            Registry.LocalMachine.Flush();
-
-            label18.Visible = true;
-            for (var ii = 0; ii < myCheckBoxs.Count; ii++)
+            return await Task<bool>.Factory.StartNew(() =>
             {
-                myCheckBoxs[ii].Enabled = false;
-                radioButton1.Enabled = false;
-                radioButton2.Enabled = false;
-                myLabel[ii].Text = "";
-            }
+                bool speedChange = false;
+                CTS_SetSpeed = new CancellationTokenSource();
 
-            foreach (ManagementObject result in search.Get())
-            {
-                NetworkAdapter adapter = new NetworkAdapter(result);
-                if (adapter.AdapterType.Equals("Ethernet 802.3"))
+                for (uint i = 1; i < Count; ++i)
                 {
-                    adapter.Disable();
-                    adapter.Enable();
+                    if (Networks[i].CheckBox.Checked)           // если порт выбран
+                        if (Networks[i].GetSpeed() != speed)    // и его скорость не совпадает с установленной в форме,
+                        {
+                            Networks[i].SetSpeed(speed);        // тогда изменяем ее
+                            speedChange = true;
+                        }
+                }
+
+                if (IsConfigPort17 && Networks[0].GetSpeed() != speed)
+                {
+                    Networks[0].SetSpeed(speed);
+                    speedChange = true;
+                }
+
+                return speedChange;
+            }, Token_SetSpeed);
+        }
+
+        internal bool CheckPort17()
+        {
+            bool isPort = false;
+
+            // порт не настроен или не активен,
+            // определяется при поиске интерфейсов SearchNetworkAdapters()
+            if (Networks[0].IsConfig == false)
+            {
+                if (GetMACFromIP(DestAddr) == "")
+                {
+                    MessageBox.Show("Ноутбук не подключен или неправильно заданы начальные конфигурации сети ноутбука!",
+                                    "Ошибка порта", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    isPort = true;
                 }
             }
-
-            for (var ii = 0; ii < myCheckBoxs.Count; ii++)
+            // порт настроен, но не активен
+            else if (IsConfigPort17 == false)
             {
-                myCheckBoxs[ii].Enabled = true;
-                radioButton1.Enabled = true;
-                radioButton2.Enabled = true;
-                myLabel[ii].Text = "";
+                MessageBox.Show("Проверьте кабель или настройки порта №17", "Ошибка порта",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                isPort = true;
             }
-            label18.Visible = false;
-            /*
-            var temp = new ManagementObject();
 
-            foreach (ManagementObject mo in search.Get())
-            {
-                temp = mo;
-                temp.InvokeMethod("Disable", null);
-                temp.InvokeMethod("Enable", null);
-            }*/
-            button3.Enabled = true;
-
-
-
-        }
-
-        private void P215Test_Load(object sender, EventArgs e)
-        {
-
-        }
-
-        private void P215Test_FormClosing(object sender, FormClosingEventArgs e)
-        {
-            Environment.Exit(1);
-        }
-
-        private void label16_Click(object sender, EventArgs e)
-        {
-
+            return isPort;
         }
     }
 
 
+    internal class NetworkAdapter : NetworkRegisrty
+    {
+        internal NetworkAdapter(bool config = false)
+            : base()
+        {
+            IsConfig = config;
+        }
+        internal NetworkAdapter(bool config, string folder, string folderIP, string ip)
+            : base(folder, folderIP, ip)
+        {
+            IsConfig = config;
+        }
+
+        internal static CancellationTokenSource CTS_Ping { get; set; } = new CancellationTokenSource();
+        internal CancellationToken Token_Ping => CTS_Ping.Token;
+        private float QualityLevel => 0.8f;
+
+        internal enum NetworkSpeed
+        {
+            AutoNegotiation,
+            HalfDuplex_10,
+            FullDuplex_10,
+            HalfDuplex_100,
+            FullDuplex_100,
+            FullDuplex_1000 = 6,
+            Empty = 255
+        }
+        internal bool IsConfig { get; set; }   // установлен ли ip-адрес
+        internal CheckBox CheckBox { get; set; }
+        internal Label Label { get; set; }
+
+        internal void SetSpeed(NetworkSpeed speed)
+        {
+            try
+            {
+                RegistryKey key = Registry.LocalMachine.OpenSubKey(Path + "\\" + Folder, true);
+                key.SetValue("*SpeedDuplex", speed.ToString("d"));
+                key.Flush();
+
+                Reset();
+            }
+            catch
+            {
+                MessageBox.Show("Перезапустите программу с правами администратора.", "Ошибка прав доступа",
+                    MessageBoxButtons.OK, MessageBoxIcon.Stop);
+                Application.Exit();
+            }
+        }
+
+        internal void Reset()
+        {
+            ManagementObjectSearcher searcher =
+                new ManagementObjectSearcher("root\\CIMV2",
+                    $"SELECT * FROM Win32_NetworkAdapter WHERE GUID = '{FolderIP}'");
+
+            foreach (ManagementObject obj in searcher.Get())
+            {
+                obj.InvokeMethod("Disable", null, null);
+                obj.InvokeMethod("Enable", null, null);
+            }
+        }
+
+        internal void CheckConfig(uint num)
+        {
+            if (CheckBox.Checked)   // если выбран порт
+            {
+                // если выбрана скорость, очистить результаты и сбросить радиокнопки
+                if (MyForm.radioButtonSpeed10.Checked || MyForm.radioButtonSpeed100.Checked)
+                {
+                    MyForm.LabelsHide();
+                    MyForm.RadioButtonReset();
+                }
+
+                if (IsConfig == false) // если неправильно настроен ip
+                {
+                    MessageBox.Show($"Проверьте конфигурацию порта №{num.ToString()}", "Ошибка порта",
+                                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    CheckBox.Checked = false;
+                }
+            }
+            else if (Form1.IsTestConducted) // если только что проводился тест
+            {
+                MyForm.LabelsHide();
+                Form1.IsTestConducted = false;
+            }
+        }
+
+        internal async Task<bool> PingTestAsync()
+        {
+            return await Task<bool>.Factory.StartNew(() =>
+            {
+                PingReply pingReply;
+
+                uint replyCount = 0, sendCount = 0;
+                do
+                {
+                    pingReply = Send(IPAddress.Parse(IP), NetworkAdapters.DestAddr);
+                    if (pingReply.NativeCode == 1 && pingReply.Status == 0)
+                        ++replyCount;
+
+                    ++sendCount;
+                }
+                while (CTS_Ping.IsCancellationRequested == false);
+
+                double quality = (double)replyCount / sendCount;
+
+                return quality > QualityLevel ? true : false;
+            }, Token_Ping);
+        }
+
+        internal PingReply Send(IPAddress srcAddress, IPAddress destAddress, int timeout = 5000,
+                        byte[] buffer = null, PingOptions po = null)
+        {
+            if (destAddress == null || destAddress.AddressFamily != AddressFamily.InterNetwork || destAddress.Equals(IPAddress.Any))
+                throw new ArgumentException();
+
+            //Defining pinvoke args
+            var source = srcAddress == null ? 0 : BitConverter.ToUInt32(srcAddress.GetAddressBytes(), 0);
+            var destination = BitConverter.ToUInt32(destAddress.GetAddressBytes(), 0);
+            var sendbuffer = buffer ?? new byte[] { };
+            var options = new Interop.Option
+            {
+                Ttl = (po == null ? (byte)255 : (byte)po.Ttl),
+                Flags = (po == null ? (byte)0 : po.DontFragment ? (byte)0x02 : (byte)0) //0x02
+            };
+            var fullReplyBufferSize = Interop.ReplyMarshalLength + sendbuffer.Length; //Size of Reply struct and the transmitted buffer length.
+            var allocSpace = Marshal.AllocHGlobal(fullReplyBufferSize); // unmanaged allocation of reply size. TODO Maybe should be allocated on stack
+
+            var reply = new Interop.Reply();
+            TimeSpan duration = new TimeSpan();
+
+            try
+            {
+                DateTime start = DateTime.Now;
+                var nativeCode = Interop.IcmpSendEcho2Ex(
+                    Interop.IcmpHandle, //_In_      HANDLE IcmpHandle,
+                    default(IntPtr), //_In_opt_  HANDLE Event,
+                    default(IntPtr), //_In_opt_  PIO_APC_ROUTINE ApcRoutine,
+                    default(IntPtr), //_In_opt_  PVOID ApcContext
+                    source, //_In_      IPAddr SourceAddress,
+                    destination, //_In_      IPAddr DestinationAddress,
+                    sendbuffer, //_In_      LPVOID RequestData,
+                    (short)sendbuffer.Length, //_In_      WORD RequestSize,
+                    ref options, //_In_opt_  PIP_OPTION_INFORMATION RequestOptions,
+                    allocSpace, //_Out_     LPVOID ReplyBuffer,
+                    fullReplyBufferSize, //_In_      DWORD ReplySize,
+                    timeout //_In_      DWORD Timeout
+                    );
+                duration = DateTime.Now - start;
+                reply = (Interop.Reply)Marshal.PtrToStructure(allocSpace, typeof(Interop.Reply)); // Parse the beginning of reply memory to reply struct
+
+                byte[] replyBuffer = null;
+                if (sendbuffer.Length != 0)
+                {
+                    replyBuffer = new byte[sendbuffer.Length];
+                    Marshal.Copy(allocSpace + Interop.ReplyMarshalLength, replyBuffer, 0, sendbuffer.Length); //copy the rest of the reply memory to managed byte[]
+                }
+
+                if (nativeCode == 1 && reply.Status == 0)
+                    return new PingReply(nativeCode, reply.Status, new IPAddress(reply.Address), reply.RoundTripTime, replyBuffer);
+                else //Means that native method is faulted.
+                    return new PingReply(nativeCode, reply.Status, new IPAddress(reply.Address), duration);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(allocSpace); //free allocated space
+            }
+        }
+
+        [DllImport("iphlpapi.dll", ExactSpelling = true)]
+        internal static extern int SendARP(int DestIP, int SrcIP, [Out] byte[] pMacAddr, ref int PhyAddrLen);
+
+        internal static string GetMACFromIP(IPAddress ip)
+        {
+            string mac = "";
+
+            try
+            {
+                byte[] array = new byte[6];
+                int len = array.Length;
+
+                if (SendARP(ip.GetHashCode(), 0, array, ref len) == 0)
+                    mac = BitConverter.ToString(array, 0, 6);
+            }
+            catch { }
+
+            return mac;
+        }
+    }
+
+
+    internal class NetworkRegisrty
+    {
+        internal NetworkRegisrty(string folder = "", string folderIP = "", string ip = "")
+        {
+            Folder = folder;
+            FolderIP = folderIP;
+            IP = ip;
+        }
+        internal string FolderIP { get; private set; }
+        internal string IP { get; private set; }
+        internal string Folder { get; private set; }
+        internal static string Path { get; } = "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}";
+        internal static string PathIP { get; } = "SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces";
+
+
+        internal NetworkSpeed GetSpeed()
+        {
+            RegistryKey key = Registry.LocalMachine.OpenSubKey($"{Path}\\{Folder}");
+            string value = (string)key.GetValue("*SpeedDuplex");
+            return (NetworkSpeed)Convert.ToUInt32(value);
+        }
+
+        internal static void GetTypeAndDriverId(string folder, out RegistryKey key, out int type, out string driverId)
+        {
+            try
+            {
+                key = Registry.LocalMachine.OpenSubKey($"{Path}\\{folder}");
+                driverId = (string)key.GetValue("DeviceInstanceID"); // название интерфейса
+                type = key.GetValue("*PhysicalMediaType") == null ? 0 : (int)key.GetValue("*PhysicalMediaType");   // тип интерфейса
+            }
+            catch { key = null; driverId = null; type = 255; }
+        }
+
+        internal static void GetIPAndMAC(RegistryKey key, out string folderIP, out string[] ips, out string[] macs)
+        {
+            folderIP = (string)key.GetValue("NetCfgInstanceId");   // дескриптор сетевого интерфейса
+            key = Registry.LocalMachine.OpenSubKey($"{PathIP}\\{folderIP}");
+            ips = (string[])key.GetValue("IPAddress");    // список ip-адресов
+            macs = (string[])key.GetValue("SubnetMask");
+        }
+    }
+
+
+    /// <summary>Interoperability Helper
+    ///     <see cref="http://msdn.microsoft.com/en-us/library/windows/desktop/bb309069(v=vs.85).aspx" />
+    /// </summary>
+    internal static class Interop
+    {
+        private static IntPtr? icmpHandle;
+        private static int? _replyStructLength;
+
+        /// <summary>Returns the application legal icmp handle. Should be close by IcmpCloseHandle
+        ///     <see cref="http://msdn.microsoft.com/en-us/library/windows/desktop/aa366045(v=vs.85).aspx" />
+        /// </summary>
+        internal static IntPtr IcmpHandle
+        {
+            get
+            {
+                if (icmpHandle == null)
+                    icmpHandle = IcmpCreateFile();
+
+                return icmpHandle.GetValueOrDefault();
+            }
+        }
+        /// <summary>Returns the the marshaled size of the reply struct.</summary>
+        internal static int ReplyMarshalLength
+        {
+            get
+            {
+                if (_replyStructLength == null)
+                    _replyStructLength = Marshal.SizeOf(typeof(Reply));
+
+                return _replyStructLength.GetValueOrDefault();
+            }
+        }
+
+
+        [DllImport("Iphlpapi.dll", SetLastError = true)]
+        private static extern IntPtr IcmpCreateFile();
+        [DllImport("Iphlpapi.dll", SetLastError = true)]
+        private static extern bool IcmpCloseHandle(IntPtr handle);
+        [DllImport("Iphlpapi.dll", SetLastError = true)]
+        internal static extern uint IcmpSendEcho2Ex(IntPtr icmpHandle, IntPtr Event, IntPtr apcroutine, IntPtr apccontext, UInt32 sourceAddress, UInt32 destinationAddress, byte[] requestData, short requestSize, ref Option requestOptions, IntPtr replyBuffer, int replySize, int timeout);
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+
+        internal struct Option
+        {
+            internal byte Ttl;
+            internal readonly byte Tos;
+            internal byte Flags;
+            internal readonly byte OptionsSize;
+            internal readonly IntPtr OptionsData;
+        }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        internal struct Reply
+        {
+            internal readonly UInt32 Address;
+            internal readonly int Status;
+            internal readonly int RoundTripTime;
+            internal readonly short DataSize;
+            internal readonly short Reserved;
+            internal readonly IntPtr DataPtr;
+            internal readonly Option Options;
+        }
+    }
+
+
+    [Serializable]
+    internal class PingReply
+    {
+        private readonly byte[] _buffer = null;
+        private readonly IPAddress _ipAddress = null;
+        private readonly uint _nativeCode = 0;
+        private readonly TimeSpan _roundTripTime = TimeSpan.Zero;
+        private readonly IPStatus _status = IPStatus.Unknown;
+        private Win32Exception _exception;
+
+
+        internal PingReply(uint nativeCode, int replystatus, IPAddress ipAddress, TimeSpan duration)
+        {
+            _nativeCode = nativeCode;
+            _ipAddress = ipAddress;
+            if (Enum.IsDefined(typeof(IPStatus), replystatus))
+                _status = (IPStatus)replystatus;
+        }
+        internal PingReply(uint nativeCode, int replystatus, IPAddress ipAddress, int roundTripTime, byte[] buffer)
+        {
+            _nativeCode = nativeCode;
+            _ipAddress = ipAddress;
+            _roundTripTime = TimeSpan.FromMilliseconds(roundTripTime);
+            _buffer = buffer;
+            if (Enum.IsDefined(typeof(IPStatus), replystatus))
+                _status = (IPStatus)replystatus;
+        }
+
+
+        /// <summary>Native result from <code>IcmpSendEcho2Ex</code>.</summary>
+        internal uint NativeCode { get { return _nativeCode; } }
+
+        internal IPStatus Status { get { return _status; } }
+
+        /// <summary>The source address of the reply.</summary>
+        internal IPAddress IpAddress { get { return _ipAddress; } }
+
+        internal byte[] Buffer { get { return _buffer; } }
+
+        internal TimeSpan RoundTripTime { get { return _roundTripTime; } }
+
+        /// <summary>Resolves the <code>Win32Exception</code> from native code</summary>
+        internal Win32Exception Exception
+        {
+            get
+            {
+                if (Status != IPStatus.Success)
+                    return _exception ?? (_exception = new Win32Exception((int)NativeCode, Status.ToString()));
+                else
+                    return null;
+            }
+        }
+
+        public override string ToString()
+        {
+            if (Status == IPStatus.Success)
+                return Status + " from " + IpAddress + " in " + RoundTripTime + " ms with " + Buffer.Length + " bytes";
+            else if (Status != IPStatus.Unknown)
+                return Status + " from " + IpAddress;
+            else
+                return Exception.Message + " from " + IpAddress;
+        }
+    }
 }
